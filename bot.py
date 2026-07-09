@@ -1,11 +1,10 @@
 import os
 import logging
 import sqlite3
-import asyncio
 import sys
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import Conflict, TelegramError
 
 # --- Configuration ---
@@ -14,7 +13,6 @@ if not BOT_TOKEN:
     logging.error("BOT_TOKEN environment variable not set!")
     sys.exit(1)
 
-# Admin IDs (comma-separated in environment variable)
 ADMIN_IDS = []
 admin_ids_str = os.environ.get("ADMIN_IDS", "")
 if admin_ids_str:
@@ -29,18 +27,13 @@ logger = logging.getLogger(__name__)
 
 # --- Database Setup ---
 def init_db():
-    """Initialize the database for groups and announcements."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
-    
-    # Store groups where bot is added
     c.execute('''CREATE TABLE IF NOT EXISTS groups
                  (group_id INTEGER PRIMARY KEY,
                   group_name TEXT,
                   added_date TIMESTAMP,
                   active INTEGER DEFAULT 1)''')
-    
-    # Store announcement history
     c.execute('''CREATE TABLE IF NOT EXISTS announcements
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   group_id INTEGER,
@@ -48,15 +41,12 @@ def init_db():
                   sent_date TIMESTAMP,
                   status TEXT,
                   recipients INTEGER)''')
-    
-    # Store pending announcements for groups
     c.execute('''CREATE TABLE IF NOT EXISTS pending_announcements
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   group_id INTEGER,
                   message TEXT,
                   created_date TIMESTAMP,
                   scheduled_time TIMESTAMP)''')
-    
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -65,17 +55,15 @@ init_db()
 
 # --- Database Helper Functions ---
 def add_group(group_id, group_name):
-    """Add a group to the database."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO groups (group_id, group_name, added_date, active) VALUES (?, ?, ?, 1)",
               (group_id, group_name, datetime.now().isoformat()))
     conn.commit()
     conn.close()
-    logger.info(f"Group {group_id} ({group_name}) added to database")
+    logger.info(f"Group {group_id} added")
 
 def remove_group(group_id):
-    """Deactivate a group."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("UPDATE groups SET active=0 WHERE group_id=?", (group_id,))
@@ -83,7 +71,6 @@ def remove_group(group_id):
     conn.close()
 
 def get_active_groups():
-    """Get all active groups."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("SELECT group_id, group_name FROM groups WHERE active=1")
@@ -92,7 +79,6 @@ def get_active_groups():
     return groups
 
 def save_announcement(group_id, message, status, recipients):
-    """Save announcement to history."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("INSERT INTO announcements (group_id, message, sent_date, status, recipients) VALUES (?, ?, ?, ?, ?)",
@@ -101,7 +87,6 @@ def save_announcement(group_id, message, status, recipients):
     conn.close()
 
 def get_group_count():
-    """Get total number of active groups."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM groups WHERE active=1")
@@ -110,7 +95,6 @@ def get_group_count():
     return count
 
 def save_pending_announcement(group_id, message, scheduled_time=None):
-    """Save a pending announcement."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("INSERT INTO pending_announcements (group_id, message, created_date, scheduled_time) VALUES (?, ?, ?, ?)",
@@ -119,7 +103,6 @@ def save_pending_announcement(group_id, message, scheduled_time=None):
     conn.close()
 
 def get_pending_announcements():
-    """Get all pending announcements."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("SELECT id, group_id, message, scheduled_time FROM pending_announcements")
@@ -128,7 +111,6 @@ def get_pending_announcements():
     return pending
 
 def delete_pending_announcement(announcement_id):
-    """Delete a pending announcement."""
     conn = sqlite3.connect('announcement_bot.db')
     c = conn.cursor()
     c.execute("DELETE FROM pending_announcements WHERE id=?", (announcement_id,))
@@ -137,17 +119,14 @@ def delete_pending_announcement(announcement_id):
 
 # --- Helper Functions ---
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user is admin."""
     if not update.effective_user:
         return False
     
     user_id = update.effective_user.id
     
-    # Check if user is in ADMIN_IDS
     if user_id in ADMIN_IDS:
         return True
     
-    # Check if user is group admin
     if update.message and update.message.chat.type in ['group', 'supergroup']:
         try:
             chat_member = await context.bot.get_chat_member(
@@ -163,43 +142,35 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 # --- Command Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command."""
     user = update.effective_user
     chat = update.effective_chat
     
     welcome_text = (
         f"🤖 **Announcement Bot**\n\n"
-        f"Hi {user.first_name}! I'm here to help broadcast messages to groups.\n\n"
-        f"**Features:**\n"
-        f"• Send announcements to all groups\n"
-        f"• Schedule announcements for later\n"
-        f"• Track announcement history\n"
-        f"• Group management\n\n"
+        f"Hi {user.first_name}! I broadcast messages to groups.\n\n"
         f"**Commands:**\n"
-        f"/announce - Send announcement to all groups\n"
-        f"/schedule - Schedule an announcement\n"
-        f"/groups - List all active groups\n"
-        f"/stats - View bot statistics\n"
+        f"/announce <message> - Send to all groups\n"
+        f"/schedule <time> <message> - Schedule announcement\n"
+        f"/groups - List active groups\n"
+        f"/stats - View statistics\n"
         f"/help - Show this message\n\n"
-        f"**Admin Only Commands:**\n"
-        f"/broadcast - Send message to all groups\n"
-        f"/removegroup - Remove a group\n"
+        f"**Admin Only:**\n"
+        f"/broadcast <message> - Super admin broadcast\n"
+        f"/removegroup <group_id> - Remove a group"
     )
     
-    # If in a group, add the group to database
     if chat.type in ['group', 'supergroup']:
         add_group(chat.id, chat.title or "Unknown Group")
-        welcome_text += f"\n\n✅ This group has been added to the announcement list!"
+        welcome_text += f"\n\n✅ This group has been added!"
     
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command."""
     help_text = (
         "🤖 **Announcement Bot Help**\n\n"
         "**Commands:**\n"
         "/announce <message> - Send announcement to all groups\n"
-        "/schedule <time> <message> - Schedule announcement (e.g., /schedule 15:30 Hello)\n"
+        "/schedule <time> <message> - Schedule announcement\n"
         "/groups - List all active groups\n"
         "/stats - View bot statistics\n"
         "/help - Show this message\n\n"
@@ -207,17 +178,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/broadcast <message> - Send to all groups\n"
         "/removegroup <group_id> - Remove a group\n\n"
         "**Example:**\n"
-        "/announce Important update: Server maintenance at 10 PM"
+        "/announce Meeting at 4 PM today!"
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /announce command - send announcement to all groups."""
     if not await is_admin(update, context):
         await update.message.reply_text("⚠️ This command is for admins only!")
         return
     
-    # Get the message from command arguments
     message_text = ' '.join(context.args)
     
     if not message_text:
@@ -227,20 +196,17 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get all active groups
     groups = get_active_groups()
     
     if not groups:
         await update.message.reply_text("❌ No active groups found!")
         return
     
-    # Send confirmation
     status_msg = await update.message.reply_text(
-        f"📢 Sending announcement to {len(groups)} groups...\n"
+        f"📢 Sending to {len(groups)} groups...\n"
         f"Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}"
     )
     
-    # Send to all groups
     success_count = 0
     fail_count = 0
     failed_groups = []
@@ -253,21 +219,18 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             success_count += 1
-            logger.info(f"Announcement sent to group {group_id}")
+            logger.info(f"Sent to group {group_id}")
             
         except Exception as e:
             fail_count += 1
             failed_groups.append((group_id, group_name))
-            logger.error(f"Failed to send to group {group_id}: {e}")
+            logger.error(f"Failed to send to {group_id}: {e}")
             
-            # If group is inaccessible, deactivate it
             if "chat not found" in str(e) or "bot was kicked" in str(e):
                 remove_group(group_id)
     
-    # Save to history
     save_announcement(0, message_text, "sent", success_count)
     
-    # Send final status
     response = f"✅ Announcement sent!\n\n"
     response += f"📊 **Statistics:**\n"
     response += f"• Successfully sent: {success_count}\n"
@@ -282,22 +245,15 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await status_msg.edit_text(response, parse_mode='Markdown')
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /broadcast command - admin only broadcast."""
-    if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ This command is for admins only!")
-        return
-    
     if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⚠️ This command requires super admin privileges!")
+        await update.message.reply_text("⚠️ Super admin only!")
         return
     
-    # Same as announce but with extra confirmation
     await announce_command(update, context)
 
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /groups command - list all active groups."""
     if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ This command is for admins only!")
+        await update.message.reply_text("⚠️ Admins only!")
         return
     
     groups = get_active_groups()
@@ -313,9 +269,8 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response, parse_mode='Markdown')
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /stats command - show bot statistics."""
     if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ This command is for admins only!")
+        await update.message.reply_text("⚠️ Admins only!")
         return
     
     group_count = get_group_count()
@@ -333,9 +288,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats, parse_mode='Markdown')
 
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /schedule command - schedule an announcement."""
     if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ This command is for admins only!")
+        await update.message.reply_text("⚠️ Admins only!")
         return
     
     args = context.args
@@ -351,7 +305,6 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = args[0]
     message = ' '.join(args[1:])
     
-    # Simple time validation (HH:MM)
     try:
         hour, minute = map(int, time_str.split(':'))
         if not (0 <= hour < 24 and 0 <= minute < 60):
@@ -364,7 +317,6 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Save to pending
     save_pending_announcement(0, message, scheduled_time)
     
     await update.message.reply_text(
@@ -373,13 +325,8 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def remove_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /removegroup command - remove a group."""
-    if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ This command is for admins only!")
-        return
-    
     if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⚠️ This command requires super admin privileges!")
+        await update.message.reply_text("⚠️ Super admin only!")
         return
     
     args = context.args
@@ -392,18 +339,15 @@ async def remove_group_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     group_id = int(args[0])
     remove_group(group_id)
-    
     await update.message.reply_text(f"✅ Group {group_id} has been removed.")
 
-# --- Group Join/Leave Handlers ---
+# --- Group Event Handlers ---
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle when bot is added to a new group."""
     if not update.message:
         return
     
     chat = update.message.chat
     
-    # Check if bot was added
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
             add_group(chat.id, chat.title or "Unknown Group")
@@ -415,76 +359,63 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             break
 
 async def left_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle when bot is removed from a group."""
     if not update.message:
         return
     
     chat = update.message.chat
     
-    # Check if bot was removed
     if update.message.left_chat_member and update.message.left_chat_member.id == context.bot.id:
         remove_group(chat.id)
         logger.info(f"Bot removed from group {chat.id}")
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors."""
     logger.error(f"Error: {context.error}")
     
     if isinstance(context.error, Conflict):
-        logger.warning("Conflict error - another bot instance running")
-    elif isinstance(context.error, TelegramError):
-        logger.warning(f"Telegram error: {context.error}")
+        logger.warning("Conflict error - another instance running")
 
 # --- Main Function ---
-async def main():
+def main():
     """Start the bot."""
     logger.info("🚀 Starting Announcement Bot...")
     
     # Create application
-    app = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
     
     # Add command handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("announce", announce_command))
-    app.add_handler(CommandHandler("broadcast", broadcast_command))
-    app.add_handler(CommandHandler("groups", groups_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("schedule", schedule_command))
-    app.add_handler(CommandHandler("removegroup", remove_group_command))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("announce", announce_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("groups", groups_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("schedule", schedule_command))
+    application.add_handler(CommandHandler("removegroup", remove_group_command))
     
     # Add group event handlers
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_handler))
-    app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_member_handler))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_handler))
+    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_member_handler))
     
     # Add error handler
-    app.add_error_handler(error_handler)
+    application.add_error_handler(error_handler)
     
     logger.info("✅ Bot is ready!")
     
     # Clear webhook
-    await app.bot.delete_webhook()
+    application.bot.delete_webhook()
     
     # Start polling
     try:
-        await app.run_polling(
+        application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            stop_signals=None
+            drop_pending_updates=True
         )
     except Conflict as e:
         logger.error(f"Conflict error: {e}")
-        logger.info("Another instance is running. Stopping...")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        sys.exit(1)
+    main()
