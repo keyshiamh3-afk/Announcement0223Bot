@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import Conflict, TelegramError
+from telegram.error import Conflict
 
 # --- Configuration ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
