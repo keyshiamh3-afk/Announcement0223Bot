@@ -1,8 +1,13 @@
 [phases.setup]
-nixPkgs = ["python312"]
+nixPkgs = ["python311", "python311Packages.pip", "python311Packages.virtualenv"]
 
 [phases.install]
-cmds = ["pip install --break-system-packages -r requirements.txt"]
+cmds = [
+  "python -m venv venv",
+  "source venv/bin/activate",
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt"
+]
 
 [phases.start]
-cmd = "python bot.py"
+cmd = "source venv/bin/activate && python bot.py"
